@@ -116,17 +116,121 @@ function sliderGo(sectionId, idx) { const container = document.querySelector('[d
 function toggleRSVPFields(sectionId) { const form = document.getElementById('rsvpForm-' + sectionId); if (!form) return; const checkboxes = form.querySelectorAll('input[name="companion"]'); const pairField = document.getElementById('rsvp-pair-field-' + sectionId); const familyField = document.getElementById('rsvp-family-field-' + sectionId); let pairChecked = false; let familyChecked = false; checkboxes.forEach(cb => { if (cb.value === 'pair' && cb.checked) pairChecked = true; if (cb.value === 'family' && cb.checked) familyChecked = true; }); if (pairField) pairField.style.display = pairChecked ? 'block' : 'none'; if (familyField) familyField.style.display = familyChecked ? 'block' : 'none'; }
 function escapeMarkdown(text) { if (!text) return ''; return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1'); }
 async function submitRSVP(event, sectionId) {
-const section = window.invitationSections ? window.invitationSections.find(s => s.id === sectionId) : null;
-if (!section) return true;
-const c = section.content;
-const method = c.submitMethod || 'formspree';
-if (method === 'formspree' && c.formspreeUrl) {
-const form = event.target;
-const formData = new FormData(form);
-const savedResponses = JSON.parse(localStorage.getItem('rsvpResponses') || '[]');
-savedResponses.push({ date: new Date().toISOString(), guestName: formData.get('guestName'), attendance: formData.get('attendance'), companion: formData.getAll('companion'), pairName: formData.get('pairName'), childrenInfo: formData.get('childrenInfo'), guestsCount: formData.get('guestsCount'), drinks: formData.getAll('drinks'), wishes: formData.get('wishes') });
-localStorage.setItem('rsvpResponses', JSON.stringify(savedResponses));
-return true;
+    event.preventDefault();
+    const form = event.target;
+    const section = sections.find(s => s.id === sectionId);
+    if (!section) return false;
+    
+    const c = section.content;
+    const formData = new FormData(form);
+    
+    const name = formData.get('guestName') || '';
+    const attendance = formData.get('attendance') || '';
+    const companions = formData.getAll('companion');
+    const pairName = formData.get('pairName') || '';
+    const childrenInfo = formData.get('childrenInfo') || '';
+    const guestsCount = formData.get('guestsCount') || '';
+    const drinks = formData.getAll('drinks');
+    const wishes = formData.get('wishes') || '';
+
+    // Функция экранирования спецсимволов для Markdown
+    function escapeMarkdown(text) {
+        if (!text) return '';
+        return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+    }
+
+    // Формируем сообщение
+    let message = '💌 *НОВЫЙ ОТВЕТ НА ПРИГЛАШЕНИЕ*\n\n';
+    message += '👤 *Имя:* ' + escapeMarkdown(name) + '\n';
+    message += '✅ *Присутствие:* ' + (attendance === 'yes' ? 'Придёт' : 'Не сможет') + '\n';
+    if (companions.length > 0) message += '👥 *С кем придёт:* ' + companions.join(', ') + '\n';
+    if (pairName) message += '💑 *Имя пары:* ' + escapeMarkdown(pairName) + '\n';
+    if (childrenInfo) message += '👶 *Дети:* ' + escapeMarkdown(childrenInfo) + '\n';
+    if (guestsCount) message += '🔢 *Количество гостей:* ' + guestsCount + '\n';
+    if (drinks.length > 0) message += '🍷 *Напитки:* ' + drinks.join(', ') + '\n';
+    if (wishes) message += '💭 *Пожелания:* ' + escapeMarkdown(wishes) + '\n';
+    message += '\n📅 _Отправлено: ' + new Date().toLocaleString('ru-RU') + '_';
+
+    // Сохраняем локально
+    const savedResponses = JSON.parse(localStorage.getItem('rsvpResponses') || '[]');
+    savedResponses.push({
+        date: new Date().toISOString(),
+        name, attendance, companions, pairName, childrenInfo, guestsCount, drinks, wishes
+    });
+    localStorage.setItem('rsvpResponses', JSON.stringify(savedResponses));
+
+    let success = false;
+    const method = c.submitMethod || 'telegram';
+
+    try {
+        if (method === 'telegram' && c.telegramBotToken && c.telegramChatId) {
+            const token = String(c.telegramBotToken).trim();
+            const chatId = String(c.telegramChatId).trim();
+            
+            // Пробуем прямой запрос
+            let url = 'https://api.telegram.org/bot' + token + '/sendMessage';
+            let response;
+            
+            try {
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'Markdown' })
+                });
+            } catch (corsError) {
+                console.warn('Прямой запрос заблокирован, используем CORS-прокси...');
+                // Пробуем через CORS-прокси
+                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(url);
+                response = await fetch(proxyUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'Markdown' })
+                });
+            }
+            
+            const data = await response.json();
+            if (data.ok) {
+                success = true;
+            } else {
+                alert('Ошибка Telegram: ' + (data.description || 'неизвестная ошибка') + '\n\nПроверьте:\n1. Токен бота (без пробелов)\n2. Chat ID (только цифры)\n3. Нажали /start в боте');
+            }
+        } else if (method === 'formspree' && c.formspreeUrl) {
+            const response = await fetch(c.formspreeUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({
+                    name, attendance, companions: companions.join(', '),
+                    pairName, childrenInfo, guestsCount,
+                    drinks: drinks.join(', '), wishes,
+                    _subject: '💌 RSVP от ' + name
+                })
+            });
+            if (response.ok) success = true;
+        } else if (method === 'mailto' && c.notifyEmail) {
+            const subject = encodeURIComponent('RSVP от ' + name);
+            const body = encodeURIComponent(message.replace(/[*_`~]/g, ''));
+            window.location.href = 'mailto:' + c.notifyEmail + '?subject=' + subject + '&body=' + body;
+            success = true;
+        } else if (method === 'local') {
+            success = true;
+        } else {
+            success = true;
+            if (method !== 'local') {
+                alert('Ответ сохранён локально. Настройте способ отправки в редакторе.');
+            }
+        }
+    } catch (error) {
+        console.error('Ошибка отправки:', error);
+        alert('Ошибка соединения: ' + error.message + '\n\nОтвет сохранён локально.\n\nПопробуйте:\n1. Использовать Formspree вместо Telegram\n2. Загрузить файл на хостинг (GitHub Pages, Netlify)\n3. Проверить интернет-соединение');
+        success = true;
+    }
+
+    if (success) {
+        form.style.display = 'none';
+        const successEl = document.getElementById('rsvpSuccess-' + sectionId);
+        if (successEl) successEl.style.display = 'block';
+    }
+    return false;
 }
 event.preventDefault();
 const form = event.target;
